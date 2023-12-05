@@ -1,0 +1,657 @@
+#LastChange: 2023.04.04
+#FaithHuwangsiHui
+
+
+#已有UCSCXena数据，进行后续分析
+
+rm(list=ls())
+options(stringsAsFactors = F)
+
+##可以直接读没有解压的数据，mRNA-SEQ数据
+
+mRNA_HiSeqV2=read.table(“HiSeqV2”,header = T,sep = ‘t‘)
+dim(mRNA_HiSeqV2)
+mRNA_HiSeqV2[1:4,1:4]
+
+#查看NA的数据
+
+na.omit(mRNA_HiSeqV2)[1:4,1:4]
+dim(na.omit(mRNA_HiSeqV2))
+save(mRNA_HiSeqV2,file=“mRNA_HiSeqV2.Rdata”)
+
+##临床信息
+
+mRNA_clinical=read.table(“CESC_clinicalMatrix” ,header = T,sep = ‘t‘, quote = “”)
+dim(mRNA_clinical)
+mRNA_clinical[1:4,1:4]
+save(mRNA_clinical,file=“mRNA_clinical.Rdata”)
+
+##生存相关信息
+
+mRNA_survival=read.table(“CESC_survival.txt.gz” ,header = T,sep = ‘t‘)
+dim(mRNA_survival)
+mRNA_survival[1:4,1:4]
+save(mRNA_survival,file=“mRNA_survival.Rdata”)
+rm(list=ls())
+options(stringsAsFactors = F)
+load(“mRNA_HiSeqV2.Rdata”)
+
+
+###########
+
+# 这里需要解析TCGA数据库的ID规律，来判断样本归类问题
+
+#01–09是癌症，10–19是正常，20–29是癌旁
+
+expr <- mRNA_HiSeqV2
+expr[1:4,1:4]
+rownames(expr)=expr[,1]
+expr=expr[,-1]
+expr[1:4,1:4]
+
+#通过数字来判断样本类型
+
+ls <- unlist(substr(colnames(expr),14,15))
+table(ls)                
+group_list=ifelse(as.numeric(substr(colnames(expr),14,15)) < 10,‘tumor’,‘normal’)
+table(group_list)
+exprSet=na.omit(expr)
+dim(exprSet)
+exprSet[1:4,1:4]
+exprSet=exprSet[,group_list==“tumor”]
+dim(exprSet)
+
+##xena下载的数据是经过log的count值，要还原才可以进行差异分析
+
+exprSet <- 2^exprSet-1
+dim(exprSet)
+exprSet[1:4,1:4]
+
+#并且还要取整数
+
+exprSet <- floor(exprSet)
+exprSet[1:4,1:4]
+save(exprSet,file=“exprSet_DEG.Rdata”)
+
+#分组
+#根据想要的基因的表达量进行分组，之后进行差异分析。
+
+load(“exprSet_DEG.Rdata”)
+
+#根据想要的基因高低表达做差异分析。中位数。平均值也ok
+
+group_list=ifelse(as.numeric(exprSet[“MYC”,])>median(as.numeric(exprSet[“MYC”,])),‘high’,‘low’)
+table(group_list)
+class(group_list)
+group_list <- factor(group_list)
+class(group_list)
+
+#差异分析
+#转录组数据 DESeq2包 进行差异分析
+
+library(DESeq2)
+colData <- data.frame(row.names=colnames(exprSet), group_list=group_list) 
+colData
+dds <- DESeqDataSetFromMatrix(countData = exprSet,colData = colData,design = ~ group_list)
+dds <- DESeq(dds)
+res <- results(dds, 
+contrast = c(“group_list”,“high”,“low”))
+head(res)
+
+##sort by padj ：优化，安装标准化P值排序
+
+resOrdered <- res[order(res$padj),]
+head(resOrdered)
+DEG =as.data.frame(resOrdered)
+DESeq2_DEG = na.omit(DEG)
+head(DESeq2_DEG)
+nrDEG=DESeq2_DEG#[,c(2,6)]
+
+#colnames(nrDEG)=c(‘log2FoldChange’,‘pvalue’) 
+
+head(nrDEG)
+
+#筛选差异基因
+#对得到的差异基因，按照fold change和P值，制定标准进行筛选。
+
+##筛选
+#get diff_gene 得到差异基因,选P值及logFC大于1的
+
+diff_gene <- subset(nrDEG,pvalue<0.01 & (log2FoldChange>=1 | log2FoldChange<=-1))
+head(diff_gene)
+
+#给数据标记上调下调
+
+resdata <- diff_gene
+resdata$significant <- c(rep(“unchange”,nrow(resdata)))
+resdata$significant[resdata$pvalue<=0.01&resdata$log2FoldChange>=1] <- “up”
+resdata$significant[resdata$pvalue<=0.01&resdata$log2FoldChange<=-1] <- “down”
+
+#查看最新数据的前五行
+
+head(resdata)
+resdata[1:40,]
+diff_gene <- resdata
+table(diff_gene$significant)
+
+#输出文件为TXT格式
+
+write.table(x=diff_gene,
+file=“diff_result_CESC_MYC.txt”,
+                        quote=F,
+                      sep = “t“,
+                  row.names = T,
+                  col.names = T)
+save(nrDEG,DESeq2_DEG,diff_gene,file=“DESeq2_DEG_result.Rdata”)
+load(“DESeq2_DEG_result.Rdata”)
+
+#热图
+
+rm(list=ls())
+options(stringsAsFactors = F)
+load(“DESeq2_DEG_result.Rdata”)
+load(“exprSet_DEG.Rdata”)
+
+####根据想要的基因高低表达做差异分析 中位数 用平均值也ok
+
+group_list=ifelse(as.numeric(exprSet[“MYC”,])>median(as.numeric(exprSet[“MYC”,])),‘high’,‘low’)
+table(group_list)
+class(group_list)
+group_list <- factor(group_list)
+class(group_list)
+
+######提取差异最大的50个基因画热图,用P值判断
+## heatmap
+
+library(pheatmap)
+choose_gene=head(rownames(diff_gene),50) ## 50 maybe better
+choose_matrix=exprSet[choose_gene,]
+
+#把太小的值去掉
+
+boxplot(choose_matrix)
+n=t(scale(t(choose_matrix)))
+boxplot(n)
+n[n>2]=2
+n[n< –2]=-2
+n[1:4,1:4]
+boxplot(n)
+
+#分组信息
+
+annotation_col=data.frame(group=group_list)
+row.names(annotation_col) <- colnames(exprSet)
+annotation_col
+#pheatmap(choose_matrix,filename = paste0(n,‘_need_DEG_top50_heatmap.png’))
+pheatmap(n,annotation_col=annotation_col,show_rownames=F,show_colnames=F)
+
+ 
+######提取差异最大的50个基因画热图,用logFC判断
+## heatmap
+
+library(pheatmap)
+diff_gene<- diff_gene[order(abs(diff_gene$log2FoldChange),decreasing = T),]
+head(diff_gene)
+exprSet <- exprSet[,order(group_list)]
+exprSet[1:4,1:4]
+choose_gene=head(rownames(diff_gene),50) ## 50 maybe better
+choose_matrix=exprSet[choose_gene,]
+
+#把太小的值去掉
+
+boxplot(choose_matrix)
+n=t(scale(t(choose_matrix)))
+boxplot(n)
+n[n>2]=2
+n[n< –2]=-2
+n[1:4,1:4]
+boxplot(n)
+
+#分组信息
+
+annotation_col=data.frame(group=group_list)
+row.names(annotation_col) <- colnames(exprSet)
+annotation_col
+#pheatmap(choose_matrix,filename = paste0(n,‘_need_DEG_top50_heatmap.png’))
+pheatmap(n,annotation_col=annotation_col,show_rownames=F,show_colnames=F)
+         
+#火山图
+#做火山图数据处理
+
+######火山图
+
+rm(list = ls())  ## 魔幻操作，一键清空~
+options(stringsAsFactors = F)
+
+#导入数据,火山图需要的数据前期处理
+
+load(“DESeq2_DEG_result.Rdata”)
+head(DESeq2_DEG)
+library(ggpubr)
+df<-DESeq2_DEG
+df<-DESeq2_DEG[-1,] ##MYC的P值太小，为了作图好看
+attach(df)
+
+##火山图横坐标是logFC，纵坐标是-log10(P.Value)
+
+plot(log2FoldChange,-log10(pvalue))
+df$v=-log10(pvalue) #df新增加一列‘v’,值为-log10(P.Value)
+ggscatter(df, x = “log2FoldChange”, y = “v”,size=0.8)
+
+##加上上调下调信息
+
+df$group = ifelse(df$pvalue>0.01,‘stable’,   #if 判断：如果这一基因的P.Value>0.01，则为stable基因
+            ifelse( df$log2FoldChange >=1,‘up’,   #接上句else 否则：接下来开始判断那些P.Value<0.01的基因，再if 判断：如果logFC >1.5,则为up（上调）基因
+            ifelse( df$log2FoldChange <= –1,‘down’,‘stable’) )  #接上句else 否则：接下来开始判断那些logFC <1.5 的基因，再if 判断：如果logFC <1.5，则为down（下调）基因，否则为stable基因
+                  )
+
+table(df$g)
+df$name=rownames(df)
+head(df)
+
+#用gpubr画火山图
+##1、ggpubr画火山图
+
+ggscatter(df, x = “log2FoldChange”, y = “v”,size=0.8,color = ‘group’)
+##挑选一些感兴趣的基因标记出来
+ggscatter(df, x = “log2FoldChange”, y = “v”, color = “group”,size = 1,
+          label = “name”, repel = T,
+          #label.select = rownames(df)[df$g != ‘stable’] ,
+          label.select = head(rownames(df)), #挑选一些基因在图中显示出来
+          palette = c(“#00AFBB”, “#999999”, “#FC4E07”) )
+ggsave(‘volcano.png’)
+
+
+###2、ggplot画火山图
+
+library(ggplot2)
+p <- ggplot(data = df, 
+            aes(x = log2FoldChange, 
+                y = v)) +
+  geom_point(alpha=0.4, size=3.5, 
+             aes(color=group)) +
+  scale_color_manual(values=c(“blue”, “grey”,“red”))+
+  geom_vline(xintercept=c(-1,1),lty=4,col=“black”,lwd=0.8) +
+  geom_hline(yintercept = –log10(0.01),lty=4,col=“black”,lwd=0.8) +
+  theme_bw()
+p
+
+#想要标记基因名字，需要生成用于添加图层的新数据
+#新数据框的内容是想要标记的基因，这里根据logFC和Pvalue的大小来筛选，可以自定义阈值来调整要显示的基因的数量：
+
+library(dplyr)
+head(df)
+for_label <- df %>% 
+  filter(abs(logFC) >4 & v>-log10(0.01))
+for_label <- data.frame(head(df)) #挑选一些基因在图中显示出来
+class(for_label)
+head(for_label)
+
+###新图层叠加到原图上去
+
+p + 
+geom_point(size = 3, shape = 1, data = for_label) + 
+ggrepel::geom_label_repel(
+    aes(label = name),
+    data = for_label,
+    color=“black”
+  )
+ggsave(“ggplot2_volcano.png”)
+
+#GO_KEGG分析前数据处理
+
+rm(list = ls())  #一键清空
+options(stringsAsFactors = F)
+
+#导入数据
+
+load(“DESeq2_DEG_result.Rdata”)
+head(DESeq2_DEG)
+df <- DESeq2_DEG
+
+#加上上调下调信息
+
+df$g=ifelse(df$pvalue>0.01,‘stable’,   #if 判断：如果这一基因的P.Value>0.01，则为stable基因
+            ifelse( df$log2FoldChange >=1,‘up’,   #接上句else 否则：接下来开始判断那些P.Value<0.01的基因，再if 判断：如果logFC >1.5,则为up（上调）基因
+                    ifelse( df$log2FoldChange <= –1,‘down’,‘stable’) )  #接上句else 否则：接下来开始判断那些logFC <1.5 的基因，再if 判断：如果logFC <1.5，则为down（下调）基因，否则为stable基因
+)
+table(df$g)
+
+#增加一列基因名字
+
+df$symbol=rownames(df)
+head(df)
+
+#载入GO、KEGG、GSEA分析需要的包
+
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+#将基因名转化成ENTREZID才能进行GO分析
+
+deg <- bitr(unique(df$symbol), fromType = “SYMBOL”,
+           toType = c( “ENTREZID”),
+           OrgDb = org.Hs.eg.db)
+head(deg)
+DEG=df
+head(DEG)
+
+#通过合并完成SYMBOL和ENTREZID的转换
+
+DEG=merge(DEG,deg,by.y=‘SYMBOL’,by.x=‘symbol’)
+head(DEG)
+
+#将差异基因的上调下调分成不同的数据框，分别进行、KEGG、GSEA分析
+
+gene_up= DEG[DEG$g == ‘up’,‘ENTREZID’] 
+gene_down=DEG[DEG$g == ‘down’,‘ENTREZID’] 
+gene_diff=c(gene_up,gene_down)
+gene_all=as.character(DEG[ ,‘ENTREZID’] )
+#data(geneList, package=”DOSE”)
+#head(geneList)
+#boxplot(geneList)
+boxplot(DEG$log2FoldChange)
+
+geneList=DEG$log2FoldChange
+head(geneList)
+names(geneList)=DEG$ENTREZID
+geneList=sort(geneList,decreasing = T)
+head(geneList)
+save(DEG,gene_up, gene_down,gene_diff, gene_all, file = ‘anno_DEG_list.Rdata’)
+
+# GO分析
+# 一:得到3种分析‘BP’,’MF’,’CC’合并的图
+
+rm(list = ls())  ## 魔幻操作
+options(stringsAsFactors = F)
+
+#完成前期的数据处理，直接load数据就可以开始进行分析
+
+load(‘anno_DEG_list.Rdata’)
+ 
+# GO database analysis 
+# 做GO数据集超几何分布检验分析，重点在结果的可视化及生物学意义的理解。
+# 一:得到3种分析‘BP’,’MF’,’CC’合并的图
+
+ego <- enrichGO(gene          = gene_up,  ##手动换上调下调的基因
+                #universe      = gene_all,
+                OrgDb         = org.Hs.eg.db,
+                ont           = “all”, #BP/CC/MF或者“ALL”，如果是“ALL”的时候要加“pool=TRUE”
+                pAdjustMethod = “BH”,  #选哪个都差距不大
+                #pvalueCutoff  = 0.1,
+                #qvalueCutoff  = 0.1,
+                pool          = TRUE,
+                readable      = TRUE
+)
+head(ego[,1:8])
+go_data <- data.frame(ego)
+head(go_data)
+write.table(x=go_data,
+            file=“go_data_CESC_MYC.txt”,
+            quote=F,
+            sep = “t“,
+           row.names = T,
+            col.names = T)
+#barplot(ego)
+#barplot(ego, showCategory = 10)
+#dotplot(ego, showCategory=10)
+
+library(ggplot2)
+setting=element_text(size = 12,color=“black”,family=“Arial”)
+barplot(ego, split=“ONTOLOGY”,showCategory = 5)+ facet_grid(ONTOLOGY~., scale=“free”)
+ggsave(“go_barplot_5.png”)
+dotplot(ego, split=“ONTOLOGY”,showCategory = 10)+ facet_grid(ONTOLOGY~., scale=“free”)
+ggsave(“go_dotplot_10.png”)
+#dotplot(ego, split=”ONTOLOGY”)+ facet_grid(ONTOLOGY~., scale=”free”)
+#ggsave(“go_dotplot.png”)
+
+### 二：得到分开的图  
+
+## 循环 将3个列表分别进行了3种分析‘BP’,’MF’,’CC’，得到九个结果
+
+g_list=list(gene_up=gene_up,
+            gene_down=gene_down,
+            gene_diff=gene_diff)
+
+  go_enrich_results <- lapply( g_list , function(gene) {
+    lapply( c(‘BP’,‘MF’,‘CC’) , function(ont) {
+      cat(paste(‘Now process ‘,ont ))
+
+      ##最关键的函数
+
+      ego <- enrichGO(gene          = gene,  
+                      universe      = gene_all,
+                      OrgDb         = org.Hs.eg.db,
+                      ont           = ont , #BP/CC/MF或者“ALL”，如果是“ALL”的时候要加“pool=TRUE”
+                      pAdjustMethod = “BH”,
+                      pvalueCutoff  = 0.99,
+                      qvalueCutoff  = 0.99,
+                      readable      = TRUE)
+      print( head(ego) )
+      return(ego)
+    })
+  })
+  save(go_enrich_results,file = ‘go_enrich_results.Rdata’)
+load(file = ‘go_enrich_results.Rdata’)
+
+##循环批量成图，并保存
+
+n1= c(‘gene_up’,‘gene_down’,‘gene_diff’)
+n2= c(‘BP’,‘MF’,‘CC’) 
+for (i in 1:3){
+  for (j in 1:3){
+    fn=paste0(‘dotplot_’,n1[i],‘_’,n2[j],‘.png’)
+    cat(paste0(fn,‘n‘))
+    png(fn,res=150,width = 1080)
+    print( dotplot(go_enrich_results[[i]][[j]] ))
+    dev.off()
+  }
+}
+
+### 三，得到3种分析‘BP’,’MF’,’CC’单独的图
+##BP
+
+ego <- enrichGO(gene          = gene_up,  ##手动换上调下调的基因
+                #universe      = gene_all,
+                OrgDb         = org.Hs.eg.db,
+                ont           = “BP”, #BP/CC/MF或者“ALL”，如果是“ALL”的时候要加“pool=TRUE”
+                pAdjustMethod = “BH”,  #选哪个都差距不大
+                #pvalueCutoff  = 0.1,
+                #qvalueCutoff  = 0.1,
+                pool          = TRUE,
+                readable      = TRUE
+)
+head(ego[,1:8])
+p1_BP <- dotplot(ego)
+p1_BP
+
+##CC
+ego <- enrichGO(gene          = gene_up,  ##手动换上调下调的基因
+                #universe      = gene_all,
+                OrgDb         = org.Hs.eg.db,
+                ont           = “CC”, #BP/CC/MF或者“ALL”，如果是“ALL”的时候要加“pool=TRUE”
+                pAdjustMethod = “BH”,  #选哪个都差距不大
+                #pvalueCutoff  = 0.1,
+                #qvalueCutoff  = 0.1,
+                pool          = TRUE,
+                readable      = TRUE
+)
+head(ego[,1:8])
+p1_CC <- dotplot(ego,showCategory = 5)
+p1_CC
+
+##MF
+ego <- enrichGO(gene          = gene_up,  ##手动换上调下调的基因
+                #universe      = gene_all,
+                OrgDb         = org.Hs.eg.db,
+                ont           = “MF”, #BP/CC/MF或者“ALL”，如果是“ALL”的时候要加“pool=TRUE”
+                pAdjustMethod = “BH”,  #选哪个都差距不大
+                #pvalueCutoff  = 0.1,
+                #qvalueCutoff  = 0.1,
+                pool          = TRUE,
+                readable      = TRUE
+)
+head(ego[,1:8])
+p1_MF <- dotplot(ego,showCategory = 5)
+p1_MF
+
+# KEGG分析
+
+rm(list = ls())  #一键清空
+options(stringsAsFactors = F)
+
+#载入GO、KEGG、GSEA分析需要的包
+
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+### 完成前期的数据处理，直接load数据就可以开始进行分析
+
+load(‘anno_DEG_list.Rdata’)
+
+## KEGG pathway analysis
+### 做KEGG数据集超几何分布检验分析，重点在结果的可视化及生物学意义的理解。
+###   over-representation test
+
+kk.up <- enrichKEGG(gene         = gene_up,
+                      organism     = ‘hsa’,
+                      universe     = gene_all,
+                      pvalueCutoff = 0.9,
+                      qvalueCutoff =0.9)
+  head(kk.up)[,1:6]
+  class(kk.up)
+  dotplot(kk.up )
+  ggsave(‘kk.up.dotplot_1.png’)
+  #dev.off()
+  
+kk.down <- enrichKEGG(gene         =  gene_down,
+                        organism     = ‘hsa’,
+                        universe     = gene_all,
+                        pvalueCutoff = 0.9,
+                        qvalueCutoff =0.9)
+  head(kk.down)[,1:6]
+  dotplot(kk.down );ggsave(‘kk.down.dotplot.png’)
+ 
+ kk.diff <- enrichKEGG(gene         = gene_diff,
+                        organism     = ‘hsa’,
+                        pvalueCutoff = 0.05)
+  head(kk.diff)[,1:6]
+  dotplot(kk.diff )
+  ggsave(‘kk.diff.dotplot.png’)
+  kegg_diff_dt <- as.data.frame(kk.diff)
+  kegg_down_dt <- as.data.frame(kk.down)
+  kegg_up_dt <- as.data.frame(kk.up)
+  down_kegg<-kegg_down_dt[kegg_down_dt$pvalue<0.05,];down_kegg$group=-1
+  up_kegg<-kegg_up_dt[kegg_up_dt$pvalue<0.05,];up_kegg$group=1
+  
+  ##自定义了一个函数source(‘functions.R’)
+  kegg_plot <- function(up_kegg,down_kegg){
+    dat=rbind(up_kegg,down_kegg)
+    colnames(dat)
+    dat$pvalue = –log10(dat$pvalue)
+    dat$pvalue=dat$pvalue*dat$group 
+    dat=dat[order(dat$pvalue,decreasing = F),]
+    g_kegg<- ggplot(dat, aes(x=reorder(Description,order(pvalue, decreasing = F)), y=pvalue, fill=group)) + 
+      geom_bar(stat=“identity”) + 
+      scale_fill_gradient(low=“blue”,high=“red”,guide = FALSE) + 
+      scale_x_discrete(name =“Pathway names”) +
+      scale_y_continuous(name =“log10P-value”) +
+      coord_flip() + theme_bw()+theme(plot.title = element_text(hjust = 0.5))+
+      ggtitle(“Pathway Enrichment”) 
+  }
+
+  g_kegg=kegg_plot(up_kegg,down_kegg)
+  print(g_kegg)
+  ggsave(g_kegg,filename = ‘kegg_up_down.png’)
+
+# GSEA分析
+
+rm(list = ls())  #一键清空
+options(stringsAsFactors = F)
+
+#载入GO、KEGG、GSEA分析需要的包
+
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+#BiocManager::install(“ReactomePA”)
+library(ReactomePA)
+library(data.table)
+
+###完成前期的数据处理，直接load数据就可以开始进行分析
+
+load(‘anno_DEG_list.Rdata’)
+geneList=DEG$log2FoldChange
+names(geneList)=DEG$ENTREZID
+geneList=sort(geneList,decreasing = T)
+head(geneList)
+
+###  GSEA 
+
+kk_gse <- gseKEGG(geneList     = geneList,
+                  organism     = ‘hsa’,
+                  nPerm        = 1000,
+                  minGSSize    = 120,
+                  pvalueCutoff = 0.9,
+                  verbose      = FALSE)
+dim(kk_gse)
+GSEA_data <- data.frame(kk_gse)
+head(GSEA_data)
+write.table(x=GSEA_data,
+            file=“GSEA_data_CESC_MYC.txt”,
+            quote=F,
+            sep = “t“,
+            row.names = T,
+            col.names = T)
+head(kk_gse)[,1:6]
+
+###单独一个条形码
+
+gseaplot(kk_gse, geneSetID = rownames(kk_gse[1,]))
+ggsave(‘gseaplot.png’)
+library(ReactomePA)
+
+'''问题反馈后老师的批注：这三种分析的结果都可以输出文本查看。有时候会出现这种情况：没有富集到任何结果。
+研究后发现，pvalueCutoff界定值应该背锅，虽然这里写的是P值，但这个包里实际是以FDR作为界定。
+经常用FDR的同学会遇到这种情况：P值很多很显著的，但是FDR算出来都是一个值，时而还都是大于0.05的相同值。
+所以解决办法就是pvalueCutoff设置等于1，要是不设定也不行，只要设定成1，就会输出所有结果。'''
+
+###GSEA分析——GO
+
+Go_gseresult <- gseGO(geneList, ‘org.Hs.eg.db’, keyType = “ENTREZID”, ont=“BP”,
+                      nPerm = 1000, minGSSize = 10, maxGSSize = 1000, pvalueCutoff=0.05)
+save(Go_gseresult,file = “Go_gseresult.Rdata”)
+load(“Go_gseresult.Rdata”)
+ 
+###GSEA分析——KEGG
+
+KEGG_gseresult <- gseKEGG(geneList, nPerm = 1000, minGSSize = 10, 
+                          maxGSSize = 1000, pvalueCutoff=1)
+save(KEGG_gseresult,file = “KEGG_gseresult.Rdata”)
+load(“KEGG_gseresult.Rdata”)
+ 
+
+##GSEA分析——Reactome
+
+Go_Reactomeresult <- gsePathway(geneList, nPerm = 1000, minGSSize = 10,
+                                maxGSSize = 1000, pvalueCutoff=1)
+save(Go_Reactomeresult,file = “Go_Reactomeresult.Rdata”)
+load(“Go_Reactomeresult.Rdata”)
+
+##波浪图
+
+ridgeplot(KEGG_gseresult, 5) #输出前十个结果
+ggsave(‘ridgeplot_1.png’)
+
+###gseaplot2
+
+gseaplot2(KEGG_gseresult, 1)
+ggsave(‘gseaplot2.png’)
+
+###gseaplot2还可以同时显示复数个功能组的富集曲线，并标记P值
+
+gseaplot2(KEGG_gseresult, 1:4, pvalue_table = TRUE)
+ggsave(‘KEGG_gseresult_1.png’)
