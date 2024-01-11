@@ -1,1 +1,52 @@
+## 安装
+'''
+conda activate
+--（base）--
+wget http://ccb.jhu.edu/software/stringtie/dl/stringtie-2.0.4.Linux_x86_64.tar.gz
+tar -zvxf stringtie-2.0.4.Linux_x86_64.tar.gz
+echo 'export PATH=~/stringtie-2.0.4.Linux_x86_64:$PATH' >> ~/.bashrc
+source ~/.bashrc
+'''
+---
+## 组装
+'''
+stringtie -p 3 线程数
+          -e 用了-e参数后，才可以运行prepDE.py3脚本得到read count矩阵（也就是进行定量）
+          -G /home/cyh/Desktop/hugene_dir/GCF_000001405.40_GRCh38.p14_genomic.gff 基因组注释信息（.gff也可以是.gtf文件）
+          -o ly1.gtf 生成样本的（.gtf）
+          -i /home/cyh/Desktop/his_result_sample1/sample1_sorted.bam  输入排序后的样本文件（.bam文件）
+'''
 
+## 合并
+'''
+stringtie --merge -p 3 \
+ly1.gtf \    输入数据是单个转录本组装后的.gtf文件
+ly2.gtf \
+...(省略)\
+lyn.gtf \
+-G 基因组注释文件
+/home/cyh/Desktop/hugene_dir/GCF_000001405.40_GRCh38.p14_genomic.gff \
+-o stringtied_merged.gtf    输出数据是一个组装好的.gtf文件
+'''
+最终输出成一个完整的gtf文件，这个gtf文件可以用来定量.
+
+## 定量
+stringTie自带的python脚本定量
+stringTie只提供了转录本水平的表达量，定量方式包括TPM和FPKM值两种
+prepDE.py进行raw count的定量方式，可以计算出raw count的表达量
+计算出raw count的表达量-o要换成-t
+'''
+python prepDE.py \
+-i sample_list.txt  \输入文件
+-g gene_count_matrix.csv  \
+-t transcript_count_matrix.csv
+'''
+
+sample_list.txt， 该文件为\t分隔的两列，第一列为样本名称，第二列为定量的gtf文件的路径
+'''
+sampleA A.stringtie.gtf
+sampleB B.stringtie.gtf    .gtf文件，可以是单个转录本组装生成的结果
+'''
+该脚本同时输出基因和转录本水平的raw count表达量值。
+生成两个结果gene_count_matrix.csv以及transcript_count_matrix.csv。
+后续就可以使用DEseq2进行后续分析了
